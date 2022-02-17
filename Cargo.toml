@@ -1,0 +1,33 @@
+[package]
+name = "lindera-server"
+version = "0.1.0"
+authors = [
+    "Minoru Osuka <minoru.osuka@gmail.com>"
+    ]
+edition = "2021"
+description = "Lindera server."
+documentation = "https://docs.rs/lindera-server"
+homepage = "https://github.com/lindera-morphology/lindera-server"
+repository = "https://github.com/lindera-morphology/lindera-server"
+readme = "README.md"
+keywords = ["morphological", "analysis", "server"]
+categories = ["text-processing"]
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.52"
+axum = "0.4.5"
+clap = { version = "3.1.0", features = ["derive"] }
+serde = "1.0.136"
+serde_derive = "1.0.136"
+serde_json = "1.0.79"
+tokio = { version = "1.17.0", features = ["full"] }
+tracing = "0.1.30"
+tracing-subscriber = "0.3.8"
+
+lindera = "0.8.1"
+lindera-core = "0.8.1"
+
+[[bin]]
+name = "lindera-server"
+path = "src/main.rs"
