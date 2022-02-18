@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use axum::extract::Extension;
 use axum::response::Json;
 use axum::routing::get;
@@ -11,6 +10,7 @@ use serde_derive::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Parser, Debug)]
@@ -37,10 +37,9 @@ async fn main() {
     // initialize tracing
     tracing_subscriber::fmt::init();
 
-    let config = TokenizerConfig::default();
-    let tokenizer = Tokenizer::with_config(config).unwrap();
-
-    let a = Arc::new(Mutex::new(tokenizer));
+    let tokenizer = Arc::new(Mutex::new(
+        Tokenizer::with_config(TokenizerConfig::default()).unwrap(),
+    ));
 
     let args = Args::parse();
 
@@ -52,7 +51,7 @@ async fn main() {
     // build our application with a route
     let app = Router::new()
         .route("/", get(root))
-        .layer(AddExtensionLayer::new(a));
+        .layer(AddExtensionLayer::new(tokenizer));
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
@@ -70,5 +69,5 @@ async fn root(Extension(tokenizer): Extension<SharedTokenizer>) -> Json<Result> 
         texts.push(text);
     }
 
-    Json( Result { tokens: texts } )
+    Json(Result { tokens: texts })
 }
