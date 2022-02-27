@@ -10,7 +10,7 @@ A Japanese Morphological Analysis Server.
 
 ## Tokenize text
 ```
-% curl -XGET http://localhost:3333 | jq .
+% curl -XPOST -H 'Content-type: text/plain' http://localhost:3333/tokenize --data-binary 'すもももももももものうち' | jq .
 ```
 
 ```json
