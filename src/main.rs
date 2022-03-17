@@ -12,12 +12,16 @@ use axum::AddExtensionLayer;
 use axum::Router;
 use clap::{AppSettings, Parser};
 use serde_derive::{Deserialize, Serialize};
-use tracing::{info, error};
+use tracing::{error, info};
+use serde_json::Value;
 
-use lindera::tokenizer::{Tokenizer, TokenizerConfig, UserDictionaryType};
-use lindera_core::error::LinderaErrorKind;
-use lindera_core::viterbi::{Mode, Penalty};
-use lindera_core::LinderaResult;
+use lindera::error::LinderaErrorKind;
+use lindera::formatter::format;
+use lindera::formatter::Format;
+use lindera::mode::{Mode, Penalty};
+use lindera::tokenizer::{DictionaryType, Tokenizer, TokenizerConfig, UserDictionaryType};
+use lindera::tokenizer::{DEFAULT_DICTIONARY_TYPE, SUPPORTED_DICTIONARY_TYPE};
+use lindera::LinderaResult;
 
 #[derive(Parser, Debug)]
 #[clap(version, about, long_about = None, setting = AppSettings::DeriveDisplayOrder)]
@@ -40,7 +44,16 @@ struct Args {
     )]
     port: u16,
 
-    /// The dictionary direcory. If not specified, use the default dictionary.
+    /// The dictionary type. local and ipadic are available.
+    #[clap(
+        short = 't',
+        long = "dict-type",
+        value_name = "DICT_TYPE",
+        default_value = DEFAULT_DICTIONARY_TYPE
+    )]
+    dict_type: String,
+
+    /// The dictionary direcory. Specify the directory path of the dictionary when "local" is specified in the dictionary type.
     #[clap(short = 'd', long = "dict", value_name = "DICT")]
     dict: Option<PathBuf>,
 
@@ -48,13 +61,18 @@ struct Args {
     #[clap(short = 'D', long = "user-dict", value_name = "USER_DICT")]
     user_dict: Option<PathBuf>,
 
-    /// The user dictionary type. csv or bin
-    #[clap(short = 't', long = "user-dict-type", value_name = "USER_DICT_TYPE")]
+    /// The user dictionary type. csv and bin are available.
+    #[clap(short = 'T', long = "user-dict-type", value_name = "USER_DICT_TYPE")]
     user_dict_type: Option<String>,
 
-    /// The tokenization mode. normal or search can be specified. If not specified, use the default mode.
-    #[clap(short = 'm', long = "mode", value_name = "MODE")]
-    mode: Option<String>,
+    /// The tokenization mode. normal, search and decompose are available.
+    #[clap(
+        short = 'm',
+        long = "mode",
+        value_name = "MODE",
+        default_value = "normal"
+    )]
+    mode: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,48 +87,70 @@ async fn main() -> LinderaResult<()> {
 
     let args = Args::parse();
 
-    // make tokenizer config
-    let mut config = TokenizerConfig {
-        dict_path: args.dict,
-        user_dict_path: args.user_dict,
-        user_dict_type: UserDictionaryType::CSV,
-        mode: Mode::Normal,
-    };
+    let mut config = TokenizerConfig::default();
 
-    // set user dictionary type
-    match args.user_dict_type {
-        Some(ref user_dict_type) => {
-            if user_dict_type == "csv" {
-                config.user_dict_type = UserDictionaryType::CSV;
-            } else if user_dict_type == "bin" {
-                config.user_dict_type = UserDictionaryType::Binary;
-            } else {
-                return Err(LinderaErrorKind::Args.with_error(anyhow::anyhow!(
-                    "Invalid user dictionary type: {}",
-                    user_dict_type
-                )));
-            }
+    // dictionary type
+    match args.dict_type.as_str() {
+        #[cfg(feature = "ipadic")]
+        "ipadic" => {
+            config.dict_type = DictionaryType::Ipadic;
         }
-        None => {
-            config.user_dict_type = UserDictionaryType::CSV;
+        #[cfg(feature = "unidic")]
+        "unidic" => {
+            config.dict_type = DictionaryType::Unidic;
+        }
+        #[cfg(feature = "ko-dic")]
+        "ko-dic" => {
+            config.dict_type = DictionaryType::Kodic;
+        }
+        #[cfg(feature = "cc-cedict")]
+        "cc-cedict" => {
+            config.dict_type = DictionaryType::Cedict;
+        }
+        "local" => {
+            config.dict_type = DictionaryType::LocalDictionary;
+            config.dict_path = args.dict;
+        }
+        _ => {
+            return Err(LinderaErrorKind::Args.with_error(anyhow::anyhow!(format!(
+                "{:?} are available for --dict-type",
+                SUPPORTED_DICTIONARY_TYPE
+            ))));
         }
     }
 
-    // set tokenize mode
-    match args.mode {
-        Some(mode) => match mode.as_str() {
-            "normal" => config.mode = Mode::Normal,
-            "search" => config.mode = Mode::Decompose(Penalty::default()),
-            "decompose" => config.mode = Mode::Decompose(Penalty::default()),
+    // user dictionary path
+    config.user_dict_path = args.user_dict;
+
+    // user dictionary type
+    match args.user_dict_type {
+        Some(ref user_dict_type) => match user_dict_type.as_str() {
+            "csv" => config.user_dict_type = UserDictionaryType::Csv,
+            "bin" => config.user_dict_type = UserDictionaryType::Binary,
             _ => {
-                return Err(LinderaErrorKind::Args
-                    .with_error(anyhow::anyhow!("unsupported mode: {}", mode)))
+                return Err(LinderaErrorKind::Args.with_error(anyhow::anyhow!(
+                    "invalid user dictionary type: {}",
+                    user_dict_type
+                )))
             }
         },
-        None => config.mode = Mode::Normal,
+        None => {
+            config.user_dict_type = UserDictionaryType::Csv;
+        }
     }
 
-    // make tokenizer
+    // mode
+    match args.mode.as_str() {
+        "normal" => config.mode = Mode::Normal,
+        "search" => config.mode = Mode::Decompose(Penalty::default()),
+        "decompose" => config.mode = Mode::Decompose(Penalty::default()),
+        _ => {
+            return Err(LinderaErrorKind::Args
+                .with_error(anyhow::anyhow!("unsupported mode: {}", args.mode)));
+        }
+    }
+
+    // create tokenizer
     let tokenizer = Tokenizer::with_config(config)?;
 
     let host = args.host;
@@ -136,32 +176,38 @@ async fn main() -> LinderaResult<()> {
 async fn tokenize(
     ContentLengthLimit(bytes): ContentLengthLimit<Bytes, { 1024 * 5_000 }>,
     Extension(tokenizer): Extension<Arc<Tokenizer>>,
-) -> Json<Result> {
+) -> Json<Value> {
     let text = match String::from_utf8(bytes.to_vec()) {
         Ok(text) => text,
         Err(err) => {
             error!("{}", err);
-            return Json(Result {
-                tokens: vec![],
-            })
+            let err_json = serde_json::json!({ "error": format!("{}", err) });
+            return Json(err_json);
         }
     };
     info!("text: {}", text);
+
+    // tokenize
     let tokens = match tokenizer.tokenize(text.as_str()) {
         Ok(tokens) => tokens,
         Err(err) => {
             error!("{}", err);
-            return Json(Result {
-                tokens: vec![],
-            })
+            let err_json = serde_json::json!({ "error": format!("{}", err) });
+            return Json(err_json);
         }
     };
 
-    let mut texts = Vec::new();
-    for token in tokens {
-        let text = token.text.to_string();
-        texts.push(text);
-    }
+    // output result
+    let output_json = match format(tokens, Format::Json) {
+        Ok(output) => output,
+        Err(err) => {
+            error!("{}", err);
+            let err_json = serde_json::json!({ "error": format!("{}", err) });
+            return Json(err_json);
+        }
+    };
 
-    Json(Result { tokens: texts })
+    let json_value = serde_json::from_str(&output_json).unwrap();
+
+    Json(json_value)
 }

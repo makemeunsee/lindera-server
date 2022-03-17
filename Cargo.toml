@@ -1,6 +1,6 @@
 [package]
 name = "lindera-server"
-version = "0.1.0"
+version = "0.12.0"
 edition = "2021"
 description = "Lindera server."
 documentation = "https://docs.rs/lindera-server"
@@ -10,6 +10,14 @@ readme = "README.md"
 keywords = ["morphological", "analysis", "server"]
 categories = ["text-processing"]
 license = "MIT"
+
+[features]
+default = []
+full = ["ipadic", "unidic", "ko-dic", "cc-cedict"]
+ipadic = ["lindera/ipadic"]  # Japanese dictionary
+unidic = ["lindera/unidic"]  # Japanese dictionary
+ko-dic = ["lindera/ko-dic"]  # Korean dictionary
+cc-cedict = ["lindera/cc-cedict"]  # Chinese dictionary
 
 [dependencies]
 anyhow = "1.0"
@@ -22,8 +30,7 @@ tokio = { version = "1.17", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
-lindera = "0.10.0"
-lindera-core = "0.10.0"
+lindera = "0.12.0"
 
 [[bin]]
 name = "lindera-server"
