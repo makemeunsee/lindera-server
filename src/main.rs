@@ -4,16 +4,15 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use axum::extract::ContentLengthLimit;
-use axum::extract::Extension;
+use axum::extract::{ContentLengthLimit, Extension};
 use axum::response::Json;
 use axum::routing::post;
 use axum::AddExtensionLayer;
 use axum::Router;
 use clap::{AppSettings, Parser};
 use serde_derive::{Deserialize, Serialize};
-use tracing::{error, info};
 use serde_json::Value;
+use tracing::{error, info};
 
 use lindera::error::LinderaErrorKind;
 use lindera::formatter::format;
