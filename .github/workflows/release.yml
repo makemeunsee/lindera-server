@@ -1,0 +1,206 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build:
+    name: Build
+    strategy:
+      # max-parallel: 1
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-pc-windows-msvc
+          - x86_64-apple-darwin
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+        toolchain: [stable]
+        feature: ["default", "ipadic", "ko-dic", "cc-cedict"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      # - name: Install packages for Linux
+      #   if : matrix.target == 'x86_64-unknown-linux-gnu'
+      #   run: |
+      #     sudo apt install -y liblzma-dev
+      - name: Cache ~/.cargo/registry
+        uses: actions/cache@v2.1.7
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache ~/.cargo/git
+        uses: actions/cache@v2.1.7
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache target
+        uses: actions/cache@v2.1.7
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+      - name: Build
+        uses: actions-rs/cargo@v1.0.1
+        with:
+          command: build
+          args: --release --features "${{ matrix.feature }}" --target=${{ matrix.target }} --target-dir=target/${{ matrix.feature }}
+          use-cross: false
+      - name: Create artifact for Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          zip --junk-paths lindera-server-${{ matrix.feature }}-${{ matrix.target }}.zip \
+            target/${{ matrix.feature }}/${{ matrix.target }}/release/lindera-server
+      - name: Create artifact for Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          powershell Compress-Archive -DestinationPath lindera-server-${{ matrix.feature }}-${{ matrix.target }}.zip -Path target/${{ matrix.feature }}/${{ matrix.target }}/release/*.exe
+      - name: Create artifact for OSX
+        if: matrix.os == 'macos-latest'
+        run: |
+          zip --junk-paths lindera-server-${{ matrix.feature }}-${{ matrix.target }}.zip \
+            target/${{ matrix.feature }}/${{ matrix.target }}/release/lindera-server
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2.3.1
+        with:
+          name: build-${{ matrix.feature }}-${{ matrix.target }}
+          path: lindera-server-${{ matrix.feature }}-${{ matrix.target }}.zip
+
+  create-release:
+    name: Create Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release
+        uses: actions/create-release@v1.1.4
+        id: create-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      - name: Create release_upload_url.txt
+        run: |
+          echo '${{ steps.create-release.outputs.upload_url }}' > release_upload_url.txt
+      - name: Upload release_upload_url.txt
+        uses: actions/upload-artifact@v2.3.1
+        with:
+          name: create-release
+          path: release_upload_url.txt
+
+  upload-release:
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-pc-windows-msvc
+          - x86_64-apple-darwin
+        feature: ["default", "ipadic", "ko-dic", "cc-cedict"]
+    name: Upload Release
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release_upload_url.txt
+        uses: actions/download-artifact@v1
+        with:
+          name: create-release
+      - id: upload-url
+        run: |
+          echo "::set-output name=url::$(cat create-release/release_upload_url.txt)"
+      - name: Download artifact
+        uses: actions/download-artifact@v1
+        with:
+          name: build-${{ matrix.feature }}-${{ matrix.target }}
+      - name: Upload release assets
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.upload-url.outputs.url }}
+          asset_path: ./build-${{ matrix.feature }}-${{ matrix.target }}/lindera-server-${{ matrix.feature }}-${{ matrix.target }}.zip
+          asset_name: lindera-server-${{ matrix.feature }}-${{ matrix.target }}.zip
+          asset_content_type: application/zip
+
+  publish-crates:
+    name: Publish crate
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        toolchain: [stable]
+    needs: [upload-release]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+      - name: Publish crate
+        run: |
+          LINDERA_SERVER_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="lindera-server") | .version')
+          LINDERA_SERVER_VERSIONS=$(curl -s -XGET https://crates.io/api/v1/crates/lindera-server | jq -r 'select(.versions != null) | .versions[].num')
+          if echo ${LINDERA_SERVER_VERSIONS} | grep ${LINDERA_SERVER_VERSION} >/dev/null; then
+            echo "lindera-server ${LINDERA_SERVER_VERSION} has already published"
+          else
+            pushd lindera-server
+            cargo publish --token ${{ secrets.CRATES_TOKEN }}
+            popd
+          fi
+
+  push-container:
+    name: Push Docker container
+    strategy:
+      matrix:
+        os: [ ubuntu-latest ]
+        toolchain: [stable]
+    needs: [publish-crates]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+      - name: Fetch latest version
+        run: |
+          LINDERA_SERVER_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="lindera-server") | .version')
+          echo "LINDERA_SERVER_VERSION=${LINDERA_SERVER_VERSION}" >> $GITHUB_ENV
+      - name: Setup QUME
+        uses: docker/setup-qemu-action@v1
+      - name: Setup Docker build environment
+        uses: docker/setup-buildx-action@v1
+      - name: Docker login
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build Docker image
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          build-args: |
+            LINDERA_SERVER_VERSION=${{ env.LINDERA_SERVER_VERSION }}
+          tags: |
+            linderamorphology/lindera-server:latest
+            linderamorphology/lindera-server:${{ env.LINDERA_SERVER_VERSION }}
