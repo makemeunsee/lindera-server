@@ -20,8 +20,7 @@ tag:
 
 publish:
 ifeq ($(shell curl -s -XGET https://crates.io/api/v1/crates/lindera-server | jq -r '.versions[].num' | grep $(LINDERA_SERVER_VERSION)),)
-	(cd lindera-server && cargo package && cargo publish)
-	sleep 10
+	cargo package && cargo publish
 endif
 
 docker-build:
