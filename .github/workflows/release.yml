@@ -142,28 +142,19 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         toolchain: [stable]
-    needs: [upload-release]
+    needs: [create-release]
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Install toolchain
-        uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v1
+      - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: ${{ matrix.toolchain }}
           override: true
-      - name: Publish crate
-        run: |
-          LINDERA_SERVER_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="lindera-server") | .version')
-          LINDERA_SERVER_VERSIONS=$(curl -s -XGET https://crates.io/api/v1/crates/lindera-server | jq -r 'select(.versions != null) | .versions[].num')
-          if echo ${LINDERA_SERVER_VERSIONS} | grep ${LINDERA_SERVER_VERSION} >/dev/null; then
-            echo "lindera-server ${LINDERA_SERVER_VERSION} has already published"
-          else
-            pushd lindera-server
-            cargo publish --token ${{ secrets.CRATES_TOKEN }}
-            popd
-          fi
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: --token ${{ secrets.CRATES_TOKEN }}
 
   push-container:
     name: Push Docker container
