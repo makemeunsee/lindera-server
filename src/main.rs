@@ -7,30 +7,28 @@ use std::sync::Arc;
 use axum::extract::{ContentLengthLimit, Extension};
 use axum::response::Json;
 use axum::routing::post;
-use axum::AddExtensionLayer;
 use axum::Router;
-use clap::{AppSettings, Parser};
+use clap::Parser;
 use serde_derive::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{error, info};
 
 use lindera::error::LinderaErrorKind;
-use lindera::formatter::format;
-use lindera::formatter::Format;
 use lindera::mode::{Mode, Penalty};
-use lindera::tokenizer::{DictionaryType, Tokenizer, TokenizerConfig, UserDictionaryType};
-use lindera::tokenizer::{DEFAULT_DICTIONARY_TYPE, SUPPORTED_DICTIONARY_TYPE};
+use lindera::tokenizer::{DictionaryKind, Tokenizer, TokenizerConfig};
+use lindera::tokenizer::{DEFAULT_DICTIONARY_KIND, SUPPORTED_DICTIONARY_KIND};
 use lindera::LinderaResult;
 
 #[derive(Parser, Debug)]
-#[clap(version, about, long_about = None, setting = AppSettings::DeriveDisplayOrder)]
+#[clap(version, about, long_about = None)]
 struct Args {
     /// Host address
     #[clap(
         short = 'H',
         long = "host",
         default_value = "0.0.0.0",
-        value_name = "HOST"
+        value_name = "HOST",
+        display_order = 1
     )]
     host: String,
 
@@ -39,7 +37,8 @@ struct Args {
         short = 'p',
         long = "port",
         default_value = "8080",
-        value_name = "PORT"
+        value_name = "PORT",
+        display_order = 2
     )]
     port: u16,
 
@@ -48,35 +47,24 @@ struct Args {
         short = 't',
         long = "dict-type",
         value_name = "DICT_TYPE",
-        default_value = DEFAULT_DICTIONARY_TYPE
+        default_value = DEFAULT_DICTIONARY_KIND,
+        display_order = 3
     )]
     dict_type: String,
 
-    /// The dictionary direcory. Specify the directory path of the dictionary when "local" is specified in the dictionary type.
-    #[clap(short = 'd', long = "dict", value_name = "DICT")]
+    /// The dictionary directory. Specify the directory path of the dictionary when "local" is specified in the dictionary type.
+    #[clap(short = 'd', long = "dict", value_name = "DICT", display_order = 4)]
     dict: Option<PathBuf>,
-
-    /// The user dictionary file path.
-    #[clap(short = 'D', long = "user-dict", value_name = "USER_DICT")]
-    user_dict: Option<PathBuf>,
-
-    /// The user dictionary type. csv and bin are available.
-    #[clap(short = 'T', long = "user-dict-type", value_name = "USER_DICT_TYPE")]
-    user_dict_type: Option<String>,
 
     /// The tokenization mode. normal, search and decompose are available.
     #[clap(
         short = 'm',
         long = "mode",
         value_name = "MODE",
-        default_value = "normal"
+        default_value = "normal",
+        display_order = 5
     )]
     mode: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Result {
-    tokens: Vec<String>,
 }
 
 #[tokio::main]
@@ -92,49 +80,25 @@ async fn main() -> LinderaResult<()> {
     match args.dict_type.as_str() {
         #[cfg(feature = "ipadic")]
         "ipadic" => {
-            config.dict_type = DictionaryType::Ipadic;
+            config.dictionary.kind = DictionaryKind::IPADIC;
         }
         #[cfg(feature = "unidic")]
         "unidic" => {
-            config.dict_type = DictionaryType::Unidic;
+            config.dictionary.kind = DictionaryKind::UniDic;
         }
         #[cfg(feature = "ko-dic")]
         "ko-dic" => {
-            config.dict_type = DictionaryType::Kodic;
+            config.dictionary.kind = DictionaryKind::KoDic;
         }
         #[cfg(feature = "cc-cedict")]
         "cc-cedict" => {
-            config.dict_type = DictionaryType::Cedict;
-        }
-        "local" => {
-            config.dict_type = DictionaryType::LocalDictionary;
-            config.dict_path = args.dict;
+            config.dictionary.kind = DictionaryKind::CcCedict;
         }
         _ => {
             return Err(LinderaErrorKind::Args.with_error(anyhow::anyhow!(format!(
                 "{:?} are available for --dict-type",
-                SUPPORTED_DICTIONARY_TYPE
+                SUPPORTED_DICTIONARY_KIND
             ))));
-        }
-    }
-
-    // user dictionary path
-    config.user_dict_path = args.user_dict;
-
-    // user dictionary type
-    match args.user_dict_type {
-        Some(ref user_dict_type) => match user_dict_type.as_str() {
-            "csv" => config.user_dict_type = UserDictionaryType::Csv,
-            "bin" => config.user_dict_type = UserDictionaryType::Binary,
-            _ => {
-                return Err(LinderaErrorKind::Args.with_error(anyhow::anyhow!(
-                    "invalid user dictionary type: {}",
-                    user_dict_type
-                )))
-            }
-        },
-        None => {
-            config.user_dict_type = UserDictionaryType::Csv;
         }
     }
 
@@ -160,7 +124,7 @@ async fn main() -> LinderaResult<()> {
     // build our application with a route
     let app = Router::new()
         .route("/tokenize", post(tokenize))
-        .layer(AddExtensionLayer::new(Arc::new(tokenizer)));
+        .layer(Extension(Arc::new(tokenizer)));
 
     // start the HTTP server
     axum::Server::bind(&addr)
@@ -169,6 +133,12 @@ async fn main() -> LinderaResult<()> {
         .unwrap();
 
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+struct DetailedResult {
+    text: String,
+    detail: Vec<String>,
 }
 
 // basic handler that responds with a static string
@@ -196,17 +166,13 @@ async fn tokenize(
         }
     };
 
-    // output result
-    let output_json = match format(tokens, Format::Json) {
-        Ok(output) => output,
-        Err(err) => {
-            error!("{}", err);
-            let err_json = serde_json::json!({ "error": format!("{}", err) });
-            return Json(err_json);
-        }
-    };
+    let detailed_results: Vec<DetailedResult> = tokens
+        .iter()
+        .map(|token| DetailedResult {
+            text: token.text.to_owned(),
+            detail: tokenizer.word_detail(token.word_id).unwrap(),
+        })
+        .collect();
 
-    let json_value = serde_json::from_str(&output_json).unwrap();
-
-    Json(json_value)
+    Json(serde_json::value::to_value(&detailed_results).unwrap())
 }
